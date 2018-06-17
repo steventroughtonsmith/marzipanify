@@ -11,6 +11,10 @@
 @import MachO;
 @import vmnet;
 
+void processEmbeddedBundle(NSString *frameworkBundlePath);
+void processEmbeddedLibrary(NSString *libraryPath);
+
+
 #define DEBUG_PRINT_COMMANDLINE 1
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
@@ -108,6 +112,13 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 	int handle = open(binaryPath.UTF8String, O_RDWR, 0);
 	char *macho = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, handle, 0);
 	
+	if (handle == -1)
+	{
+		printf("Error: can't load %s", binaryPath.UTF8String);
+		close(handle);
+		return @[];
+	}
+	
 	const struct fat_header *header_fat = (struct fat_header *)macho;
 	uint8_t *imageHeaderPtr = (uint8_t*)macho;
 	
@@ -128,6 +139,12 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 				header64offset = OSSwapBigToHostInt32(uarch.offset) -32 + sizeof(struct mach_header_64);
 				break;
 			}
+			else if (OSSwapBigToHostInt32(uarch.cputype) == CPU_TYPE_ARM64)
+			{
+				printf("mach_header_64 offset = %u\n", OSSwapBigToHostInt32(uarch.offset));
+				header64offset = OSSwapBigToHostInt32(uarch.offset) -32 + sizeof(struct mach_header_64);
+				break;
+			}
 			else
 				imageHeaderPtr += sizeof(struct fat_arch);
 		}
@@ -143,6 +160,9 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 	
 	typedef struct load_command load_command;
 	const struct mach_header_64 *header64 = (struct mach_header_64 *)imageHeaderPtr;
+	
+	if (header64->magic != MH_MAGIC_64)
+		return @[];
 
 	imageHeaderPtr += sizeof(struct mach_header_64);
 	load_command *command = (load_command*)(imageHeaderPtr);
@@ -197,11 +217,12 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 
 NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 {
-	if ([loadedDylib hasPrefix:@"/System/iOSSupport"])
+	if ([loadedDylib hasPrefix:@"/System/iOSSupport"] || [loadedDylib hasPrefix:@"/System/iOSSimulator"])
 		return loadedDylib;
 	
 	NSString *possibleiOSMacDylibPath = [@"/System/iOSSupport" stringByAppendingPathComponent:loadedDylib];
-	
+	//NSString *possibleSimulatorDylibPath = [@"/System/iOSSimulator" stringByAppendingPathComponent:loadedDylib];
+
 	if ([[NSFileManager defaultManager] fileExistsAtPath:possibleiOSMacDylibPath])
 	{
 		return possibleiOSMacDylibPath;
@@ -212,7 +233,7 @@ NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 
 void dumpEntitlementsForBinary(NSString *appBundlePath, NSString *appBinaryPath)
 {
-	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > Entitlements-\"%@\".plist", appBundlePath, appBinaryPath.lastPathComponent];
+	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > \"Entitlements-%@\".plist", appBundlePath, appBinaryPath.lastPathComponent];
 	
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", entitlementCommand.UTF8String);
@@ -240,15 +261,37 @@ void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
 }
 
 
-void processEmbeddedFramework(NSString *frameworkBundlePath)
+void processEmbeddedBundle(NSString *bundlePath)
 {
-	NSString *infoPlistPath = [frameworkBundlePath stringByAppendingPathComponent:@"Info.plist"];
+	NSString *infoPlistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
 	NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
 	NSString *executableName = infoPlist[@"CFBundleExecutable"];
 	
-	NSString *frameworkBinaryPath = [frameworkBundlePath stringByAppendingPathComponent:executableName];
+	NSString *frameworkBinaryPath = [bundlePath stringByAppendingPathComponent:executableName];
+	NSString *embeddedBundlesPath = [bundlePath stringByAppendingPathComponent:@"Frameworks"];
 	
-	dumpEntitlementsForBinary(frameworkBundlePath, frameworkBinaryPath);
+	NSArray *embeddedBundles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedBundlesPath error:nil];
+	
+	if (embeddedBundles)
+	{
+		for (NSString *framework in embeddedBundles)
+		{
+			if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
+			{
+				processEmbeddedBundle([embeddedBundlesPath stringByAppendingPathComponent:framework]);
+			}
+			else if ([framework hasSuffix:@".dylib"])
+			{
+				processEmbeddedLibrary([embeddedBundlesPath stringByAppendingPathComponent:framework]);
+			}
+			else
+			{
+				
+			}
+		}
+	}
+	
+	dumpEntitlementsForBinary(bundlePath, frameworkBinaryPath);
 	
 	/* Do Linker Redirects */
 	
@@ -270,7 +313,7 @@ void processEmbeddedFramework(NSString *frameworkBundlePath)
 		}
 	}
 	
-	resignBinary(frameworkBundlePath, frameworkBinaryPath);
+	resignBinary(bundlePath, frameworkBinaryPath);
 }
 
 void processEmbeddedLibrary(NSString *libraryPath)
@@ -306,6 +349,20 @@ void print_usage()
 {
 	printf("usage: marzipanify MyApp.app\n\n");
 }
+
+//int __main(int argc, const char * argv[])
+//{
+//	NSString *frameworksPath = @"/System/iOSSimulator/System/Library/Frameworks";
+//
+//	NSArray *frameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:frameworksPath error:nil];
+//
+//	for (NSString *framework in frameworks)
+//	{
+//		processEmbeddedBundle([frameworksPath stringByAppendingPathComponent:framework]);
+//	}
+//
+//	return 0;
+//}
 
 int main(int argc, const char * argv[]) {
 	@autoreleasepool {
@@ -367,7 +424,7 @@ int main(int argc, const char * argv[]) {
 		{
 			if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
 			{
-				processEmbeddedFramework([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+				processEmbeddedBundle([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
 			}
 			else
 			{
