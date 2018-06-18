@@ -311,7 +311,7 @@ void processEmbeddedBundle(NSString *bundlePath)
 		if (![dylib isEqualToString:redirectedDylib])
 		{
 			
-			NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change %@ %@ %@", dylib, redirectedDylib, frameworkBinaryPath];
+			NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change \"%@\" \"%@\" \"%@\"", dylib, redirectedDylib, frameworkBinaryPath];
 			
 #if DEBUG_PRINT_COMMANDLINE
 			printf("%s\n", install_name_tool_command.UTF8String);
@@ -340,7 +340,7 @@ void processEmbeddedLibrary(NSString *libraryPath)
 		if (![dylib isEqualToString:redirectedDylib])
 		{
 			
-			NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change %@ %@ %@", dylib, redirectedDylib, frameworkBinaryPath];
+			NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change \"%@\" \"%@\" \"%@\"", dylib, redirectedDylib, frameworkBinaryPath];
 			
 #if DEBUG_PRINT_COMMANDLINE
 			printf("%s\n", install_name_tool_command.UTF8String);
@@ -418,7 +418,7 @@ int main(int argc, const char * argv[]) {
 			if (![dylib isEqualToString:redirectedDylib])
 			{
 				
-				NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change %@ %@ %@", dylib, redirectedDylib, appBinaryPath];
+				NSString *install_name_tool_command = [NSString stringWithFormat:@"install_name_tool -change \"%@\" \"%@\" \"%@\"", dylib, redirectedDylib, appBinaryPath];
 				
 #if DEBUG_PRINT_COMMANDLINE
 				printf("%s\n", install_name_tool_command.UTF8String);
@@ -429,7 +429,7 @@ int main(int argc, const char * argv[]) {
 		
 		/* Add @rpath */
 		
-		NSString *rpathCommand = [NSString stringWithFormat:@"install_name_tool -add_rpath \"@executable_path/../Frameworks/\" %@", appBinaryPath];
+		NSString *rpathCommand = [NSString stringWithFormat:@"install_name_tool -add_rpath \"@executable_path/../Frameworks/\" \"%@\"", appBinaryPath];
 		
 #if DEBUG_PRINT_COMMANDLINE
 		printf("%s\n", rpathCommand.UTF8String);
