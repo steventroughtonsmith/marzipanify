@@ -11,11 +11,12 @@
 @import MachO;
 @import vmnet;
 
-void processEmbeddedBundle(NSString *frameworkBundlePath);
+void processEmbeddedBundle(NSString *bundlePath);
 void processEmbeddedLibrary(NSString *libraryPath);
 
+NSArray *__whitelistedMacFrameworks = nil;
 
-#define DEBUG_PRINT_COMMANDLINE 1
+#define DEBUG_PRINT_COMMANDLINE 0
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
 {
@@ -114,7 +115,7 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 	
 	if (handle == -1)
 	{
-		printf("Error: can't load %s", binaryPath.UTF8String);
+		printf("ERROR: can't load %s", binaryPath.UTF8String);
 		close(handle);
 		return @[];
 	}
@@ -135,13 +136,13 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 			
 			if (OSSwapBigToHostInt32(uarch.cputype) == CPU_TYPE_X86_64)
 			{
-				printf("mach_header_64 offset = %u\n", OSSwapBigToHostInt32(uarch.offset));
+				//printf("mach_header_64 offset = %u\n", OSSwapBigToHostInt32(uarch.offset));
 				header64offset = OSSwapBigToHostInt32(uarch.offset) -32 + sizeof(struct mach_header_64);
 				break;
 			}
 			else if (OSSwapBigToHostInt32(uarch.cputype) == CPU_TYPE_ARM64)
 			{
-				printf("mach_header_64 offset = %u\n", OSSwapBigToHostInt32(uarch.offset));
+				//printf("mach_header_64 offset = %u\n", OSSwapBigToHostInt32(uarch.offset));
 				header64offset = OSSwapBigToHostInt32(uarch.offset) -32 + sizeof(struct mach_header_64);
 				break;
 			}
@@ -151,7 +152,7 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 		
 		if (header64offset == 0)
 		{
-			printf("Error: No X86_64 slice found.\n");
+			printf("ERROR: No X86_64 or ARM64 slice found.\n");
 			exit(-1);
 		}
 	}
@@ -185,7 +186,7 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 		}
 		else if(command->cmd == LC_VERSION_MIN_IPHONEOS)
 		{
-			printf("WARNING: This app was built with an earlier iOS SDK. It will require the CFMZEnabled=1 environment variable (which will be added to its Info.plist).\n");
+			//printf("WARNING: This bundle (%s) was built with an earlier iOS SDK. It will require the CFMZEnabled=1 environment variable (which will be added to its Info.plist).\n", binaryPath.lastPathComponent.UTF8String);
 			struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
 			ucmd.cmd = LC_VERSION_MIN_MACOSX;
 			ucmd.sdk = 10<<16|14<<8|0;
@@ -228,12 +229,18 @@ NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 		return possibleiOSMacDylibPath;
 	}
 	
+	
+	if (![[NSFileManager defaultManager] fileExistsAtPath:loadedDylib] && ![loadedDylib hasPrefix:@"@rpath"] && ![loadedDylib hasPrefix:@"@executable_path"])
+	{
+		printf("WARNING: no linker redirect available for %s\n", loadedDylib.UTF8String);
+	}
+	
 	return loadedDylib;
 }
 
 void dumpEntitlementsForBinary(NSString *appBundlePath, NSString *appBinaryPath)
 {
-	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > \"Entitlements-%@\".plist", appBundlePath, appBinaryPath.lastPathComponent];
+	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > \"Entitlements-%@\".plist &> /dev/null", appBundlePath, appBinaryPath.lastPathComponent];
 	
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", entitlementCommand.UTF8String);
@@ -253,7 +260,7 @@ void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
 	entitlementsDict[@"com.apple.private.iosmac"] = @YES;
 	[entitlementsDict writeToFile:entitlementsPath atomically:NO];
 	
-	NSString *resignCommand = [NSString stringWithFormat:@"/usr/bin/codesign --force --sign - --entitlements \"%@\" --timestamp=none \"%@\"", entitlementsPath, appBundlePath];
+	NSString *resignCommand = [NSString stringWithFormat:@"/usr/bin/codesign --force --sign - --entitlements \"%@\" --timestamp=none \"%@\" &> /dev/null", entitlementsPath, appBundlePath];
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", resignCommand.UTF8String);
 #endif
@@ -364,6 +371,11 @@ void print_usage()
 //	return 0;
 //}
 
+void loadWhitelist()
+{
+	__whitelistedMacFrameworks = [[NSString stringWithContentsOfFile:@"/System/iOSSupport/dyld/macOS-whitelist.txt" usedEncoding:nil error:nil] componentsSeparatedByString:@"\n"];
+}
+
 int main(int argc, const char * argv[]) {
 	@autoreleasepool {
 		
@@ -376,6 +388,14 @@ int main(int argc, const char * argv[]) {
 		NSString *appBundlePath = [NSString stringWithUTF8String:argv[1]];
 		NSString *appBinaryPath = binaryPathForBundlePath(appBundlePath);
 		NSString *embeddedFrameworksPath = [appBundlePath stringByAppendingPathComponent:@"Frameworks"];
+		
+		loadWhitelist();
+		
+		if ([appBundlePath hasSuffix:@".framework"] || [appBundlePath hasSuffix:@".bundle"])
+		{
+			processEmbeddedBundle(appBundlePath);
+			return 0;
+		}
 		
 		if (![appBundlePath hasSuffix:@".app"] || ![[NSFileManager defaultManager] fileExistsAtPath:appBundlePath isDirectory:nil])
 		{
