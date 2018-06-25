@@ -16,7 +16,39 @@ void processEmbeddedLibrary(NSString *libraryPath);
 
 NSArray *__whitelistedMacFrameworks = nil;
 
+NSString *injectedCode = @"#import <Foundation/Foundation.h>\n\
+#import <objc/runtime.h>\n\
+@implementation NSBundle (Marzipan)\n\
++(NSString *)currentStringsTableName { return nil; }\n\
+@end\n\
+@implementation NSObject\n\
+-(void)swizzled_updateControlsForLargeNumberKeysInTracker:(id)a layout:(id)b isVertical:(id)c {}\n\
+@end\n\
+__attribute__((constructor)) void marzipanEntryPoint()\n\
+{\n\
+	static dispatch_once_t onceToken;\n\
+	dispatch_once(&onceToken, ^{\n\
+		Class class = NSClassFromString(@\\\"CalcController\\\");\n\
+		\n\
+		SEL defaultSelector = NSSelectorFromString(@\\\"updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
+		SEL swizzledSelector = NSSelectorFromString(@\\\"swizzled_updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
+		\n\
+		Method defaultMethod = class_getInstanceMethod(class, defaultSelector);\n\
+		Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);\n\
+		\n\
+		BOOL isMethodExists = !class_addMethod(class, defaultSelector, method_getImplementation(swizzledMethod), method_getTypeEncoding(swizzledMethod));\n\
+		\n\
+		if (isMethodExists) {\n\
+			method_exchangeImplementations(defaultMethod, swizzledMethod);\n\
+		}\n\
+		else {\n\
+			class_replaceMethod(class, swizzledSelector, method_getImplementation(defaultMethod), method_getTypeEncoding(defaultMethod));\n\
+		}\n\
+	});\n\
+}";
+
 #define DEBUG_PRINT_COMMANDLINE 0
+#define INJECT_MARZIPAN_GLUE 1
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
 {
@@ -44,9 +76,30 @@ void processInfoPlist(NSString *infoPlistPath)
 	[infoPlist removeObjectForKey:@"DTXcodeBuild"];
 	[infoPlist removeObjectForKey:@"DTPlatformName"];
 	
-	infoPlist[@"LSEnvironment"] = @{@"CFMZEnabled" : @"1"};
+	infoPlist[@"LSEnvironment"] = @{
+									@"CFMZEnabled" : @"1"
+#if INJECT_MARZIPAN_GLUE
+									, @"DYLD_INSERT_LIBRARIES" : @"@executable_path/../Frameworks/MarzipanGlue.dylib"
+#endif
+									};
 	
 	[infoPlist writeToFile:infoPlistPath atomically:NO];
+}
+
+void injectMarzipanGlue(NSString *bundlePath)
+{
+	printf("WARNING: Injecting Marzipan patch code into this app bundle.\n");
+	
+	NSString *frameworksPath = [bundlePath stringByAppendingPathComponent:@"Frameworks"];
+	
+	[[NSFileManager defaultManager] createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:nil];
+	
+	NSString *compilationCommand = [NSString stringWithFormat:@"echo \"%@\" | xcrun clang -x objective-c - -dynamiclib -framework Foundation -o %@/MarzipanGlue.dylib", injectedCode, frameworksPath];
+	
+#if DEBUG_PRINT_COMMANDLINE
+	printf("%s\n", compilationCommand.UTF8String);
+#endif
+	system(compilationCommand.UTF8String);
 }
 
 BOOL repackageAppBundle(NSString *bundlePath)
@@ -407,6 +460,11 @@ int main(int argc, const char * argv[]) {
 		
 		dumpEntitlementsForBinary(appBundlePath, appBinaryPath);
 		
+#if INJECT_MARZIPAN_GLUE
+		/* Inject some glue code */
+		injectMarzipanGlue(appBundlePath);
+#endif
+		
 		/* Do Linker Redirects */
 		
 		NSArray *dylibs = arrayOfLoadedDylibs(appBinaryPath);
@@ -455,7 +513,7 @@ int main(int argc, const char * argv[]) {
 		/* Package App */
 		
 		repackageAppBundle(appBundlePath);
-		
+
 		/* Re-sign */
 		
 		resignBinary(appBundlePath, appBinaryPath);
