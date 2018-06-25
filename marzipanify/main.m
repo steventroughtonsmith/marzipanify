@@ -48,7 +48,7 @@ __attribute__((constructor)) void marzipanEntryPoint()\n\
 }";
 
 #define DEBUG_PRINT_COMMANDLINE 0
-#define INJECT_MARZIPAN_GLUE 1
+#define INJECT_MARZIPAN_GLUE 0
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
 {
