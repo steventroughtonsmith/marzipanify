@@ -66,7 +66,8 @@ void processInfoPlist(NSString *infoPlistPath)
 	infoPlist[@"LSRequiresIPhoneOS"] = @NO;
 	infoPlist[@"CFBundleSupportedPlatforms"] = @[@"MacOSX"];
 	infoPlist[@"MinimumOSVersion"] = @"10.14";
-	
+	infoPlist[@"CanInheritApplicationStateFromOtherProcesses"] = @YES;
+
 	[infoPlist removeObjectForKey:@"DTSDKName"];
 	[infoPlist removeObjectForKey:@"DTSDKBuild"];
 	[infoPlist removeObjectForKey:@"DTCompiler"];
@@ -239,13 +240,17 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 		}
 		else if(command->cmd == LC_VERSION_MIN_IPHONEOS)
 		{
-			//printf("WARNING: This bundle (%s) was built with an earlier iOS SDK. It will require the CFMZEnabled=1 environment variable (which will be added to its Info.plist).\n", binaryPath.lastPathComponent.UTF8String);
+			printf("ERROR: This bundle (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuild with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
+			
+			exit(-1);
+			/*
 			struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
 			ucmd.cmd = LC_VERSION_MIN_MACOSX;
 			ucmd.sdk = 10<<16|14<<8|0;
 			ucmd.version = 10<<16|14<<8|0;
 			
 			memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
+			 */
 		}
 		else if(command->cmd == LC_BUILD_VERSION)
 		{
@@ -271,7 +276,7 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 
 NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 {
-	if ([loadedDylib hasPrefix:@"/System/iOSSupport"] || [loadedDylib hasPrefix:@"/System/iOSSimulator"])
+	if ([loadedDylib hasPrefix:@"/System/iOSSupport"])
 		return loadedDylib;
 	
 	NSString *possibleiOSMacDylibPath = [@"/System/iOSSupport" stringByAppendingPathComponent:loadedDylib];
