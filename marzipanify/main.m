@@ -157,7 +157,7 @@ BOOL repackageAppBundle(NSString *bundlePath)
 	return YES;
 }
 
-NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
+NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 {
 	NSMutableArray *dylibs = @[].mutableCopy;
 	NSDictionary *attribs = [[NSFileManager defaultManager] attributesOfFileSystemForPath:binaryPath error:nil];
@@ -240,7 +240,7 @@ NSArray *arrayOfLoadedDylibs(NSString *binaryPath)
 		}
 		else if(command->cmd == LC_VERSION_MIN_IPHONEOS)
 		{
-			printf("ERROR: This bundle (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuild with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
+			printf("ERROR: This bundle (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuilt with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
 			
 			exit(-1);
 			/*
@@ -287,7 +287,6 @@ NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 		return possibleiOSMacDylibPath;
 	}
 	
-	
 	if (![[NSFileManager defaultManager] fileExistsAtPath:loadedDylib] && ![loadedDylib hasPrefix:@"@rpath"] && ![loadedDylib hasPrefix:@"@executable_path"])
 	{
 		printf("WARNING: no linker redirect available for %s\n", loadedDylib.UTF8String);
@@ -325,7 +324,6 @@ void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
 	system(resignCommand.UTF8String);
 }
 
-
 void processEmbeddedBundle(NSString *bundlePath)
 {
 	NSString *infoPlistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
@@ -360,7 +358,7 @@ void processEmbeddedBundle(NSString *bundlePath)
 	
 	/* Do Linker Redirects */
 	
-	NSArray *dylibs = arrayOfLoadedDylibs(frameworkBinaryPath);
+	NSArray *dylibs = modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(frameworkBinaryPath);
 	
 	for (NSString *dylib in dylibs)
 	{
@@ -389,7 +387,7 @@ void processEmbeddedLibrary(NSString *libraryPath)
 	
 	/* Do Linker Redirects */
 	
-	NSArray *dylibs = arrayOfLoadedDylibs(frameworkBinaryPath);
+	NSArray *dylibs = modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(frameworkBinaryPath);
 	
 	for (NSString *dylib in dylibs)
 	{
@@ -415,20 +413,6 @@ void print_usage()
 	printf("usage: marzipanify MyApp.app\n\n");
 }
 
-//int __main(int argc, const char * argv[])
-//{
-//	NSString *frameworksPath = @"/System/iOSSimulator/System/Library/Frameworks";
-//
-//	NSArray *frameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:frameworksPath error:nil];
-//
-//	for (NSString *framework in frameworks)
-//	{
-//		processEmbeddedBundle([frameworksPath stringByAppendingPathComponent:framework]);
-//	}
-//
-//	return 0;
-//}
-
 void loadWhitelist()
 {
 	__whitelistedMacFrameworks = [[NSString stringWithContentsOfFile:@"/System/iOSSupport/dyld/macOS-whitelist.txt" usedEncoding:nil error:nil] componentsSeparatedByString:@"\n"];
@@ -447,6 +431,8 @@ int main(int argc, const char * argv[]) {
 		NSString *appBinaryPath = binaryPathForBundlePath(appBundlePath);
 		NSString *embeddedFrameworksPath = [appBundlePath stringByAppendingPathComponent:@"Frameworks"];
 		
+		BOOL treatAsBinaryFile = NO;
+		
 		loadWhitelist();
 		
 		if ([appBundlePath hasSuffix:@".framework"] || [appBundlePath hasSuffix:@".bundle"])
@@ -455,10 +441,18 @@ int main(int argc, const char * argv[]) {
 			return 0;
 		}
 		
-		if (![appBundlePath hasSuffix:@".app"] || ![[NSFileManager defaultManager] fileExistsAtPath:appBundlePath isDirectory:nil])
+		if (![appBundlePath hasSuffix:@".app"])
 		{
-			print_usage();
-			return -1;
+			if (![[NSFileManager defaultManager] fileExistsAtPath:appBundlePath isDirectory:nil])
+			{
+				print_usage();
+				return -1;
+			}
+			else
+			{
+				/* Treat as a single binary file; attempt to change the mach header and ignore linker or bundle packaging */
+				treatAsBinaryFile = YES;
+			}
 		}
 		
 		/* Dump Entitlements */
@@ -472,7 +466,7 @@ int main(int argc, const char * argv[]) {
 		
 		/* Do Linker Redirects */
 		
-		NSArray *dylibs = arrayOfLoadedDylibs(appBinaryPath);
+		NSArray *dylibs = modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(appBinaryPath);
 		
 		for (NSString *dylib in dylibs)
 		{
@@ -499,25 +493,28 @@ int main(int argc, const char * argv[]) {
 #endif
 		system(rpathCommand.UTF8String);
 		
-		/* Process Frameworks */
-		
-		NSArray *embeddedFrameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedFrameworksPath error:nil];
-		
-		for (NSString *framework in embeddedFrameworks)
+		if (!treatAsBinaryFile)
 		{
-			if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
+			/* Process Frameworks */
+			
+			NSArray *embeddedFrameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedFrameworksPath error:nil];
+			
+			for (NSString *framework in embeddedFrameworks)
 			{
-				processEmbeddedBundle([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+				if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
+				{
+					processEmbeddedBundle([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+				}
+				else
+				{
+					processEmbeddedLibrary([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+				}
 			}
-			else
-			{
-				processEmbeddedLibrary([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
-			}
+			
+			/* Package App */
+			
+			repackageAppBundle(appBundlePath);
 		}
-		
-		/* Package App */
-		
-		repackageAppBundle(appBundlePath);
 
 		/* Re-sign */
 		
