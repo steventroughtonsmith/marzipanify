@@ -18,37 +18,50 @@ NSArray *__whitelistedMacFrameworks = nil;
 
 NSString *injectedCode = @"#import <Foundation/Foundation.h>\n\
 #import <objc/runtime.h>\n\
+int dyld_get_active_platform();\n\
+\n\
+int my_dyld_get_active_platform()\n\
+{\n\
+	return 6;\n\
+}\n\
+\n\
+typedef struct interpose_s { void *new_func; void *orig_func; } interpose_t;\n\
+\n\
+static const interpose_t interposing_functions[] __attribute__ ((used, section(\\\"__DATA, __interpose\\\"))) = {\n\
+	{ (void *)my_dyld_get_active_platform, (void *)dyld_get_active_platform}\n\
+};\n\
 @implementation NSBundle (Marzipan)\n\
 +(NSString *)currentStringsTableName { return nil; }\n\
-@end\n\
-@implementation NSObject\n\
--(void)swizzled_updateControlsForLargeNumberKeysInTracker:(id)a layout:(id)b isVertical:(id)c {}\n\
-@end\n\
-__attribute__((constructor)) void marzipanEntryPoint()\n\
-{\n\
-	static dispatch_once_t onceToken;\n\
-	dispatch_once(&onceToken, ^{\n\
-		Class class = NSClassFromString(@\\\"CalcController\\\");\n\
-		\n\
-		SEL defaultSelector = NSSelectorFromString(@\\\"updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
-		SEL swizzledSelector = NSSelectorFromString(@\\\"swizzled_updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
-		\n\
-		Method defaultMethod = class_getInstanceMethod(class, defaultSelector);\n\
-		Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);\n\
-		\n\
-		BOOL isMethodExists = !class_addMethod(class, defaultSelector, method_getImplementation(swizzledMethod), method_getTypeEncoding(swizzledMethod));\n\
-		\n\
-		if (isMethodExists) {\n\
-			method_exchangeImplementations(defaultMethod, swizzledMethod);\n\
-		}\n\
-		else {\n\
-			class_replaceMethod(class, swizzledSelector, method_getImplementation(defaultMethod), method_getTypeEncoding(defaultMethod));\n\
-		}\n\
-	});\n\
-}";
+@end";
+
+//@implementation NSObject\n\
+//-(void)swizzled_updateControlsForLargeNumberKeysInTracker:(id)a layout:(id)b isVertical:(id)c {}\n\
+//@end\n\
+//__attribute__((constructor)) void marzipanEntryPoint()\n\
+//{\n\
+//	static dispatch_once_t onceToken;\n\
+//	dispatch_once(&onceToken, ^{\n\
+//		Class class = NSClassFromString(@\\\"CalcController\\\");\n\
+//		\n\
+//		SEL defaultSelector = NSSelectorFromString(@\\\"updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
+//		SEL swizzledSelector = NSSelectorFromString(@\\\"swizzled_updateControlsForLargeNumberKeysInTracker:layout:isVertical:\\\");\n\
+//		\n\
+//		Method defaultMethod = class_getInstanceMethod(class, defaultSelector);\n\
+//		Method swizzledMethod = class_getInstanceMethod(class, swizzledSelector);\n\
+//		\n\
+//		BOOL isMethodExists = !class_addMethod(class, defaultSelector, method_getImplementation(swizzledMethod), method_getTypeEncoding(swizzledMethod));\n\
+//		\n\
+//		if (isMethodExists) {\n\
+//			method_exchangeImplementations(defaultMethod, swizzledMethod);\n\
+//		}\n\
+//		else {\n\
+//			class_replaceMethod(class, swizzledSelector, method_getImplementation(defaultMethod), method_getTypeEncoding(defaultMethod));\n\
+//		}\n\
+//	});\n\
+//}";
 
 #define DEBUG_PRINT_COMMANDLINE 0
-#define INJECT_MARZIPAN_GLUE 0
+BOOL INJECT_MARZIPAN_GLUE = NO;
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
 {
@@ -77,12 +90,10 @@ void processInfoPlist(NSString *infoPlistPath)
 	[infoPlist removeObjectForKey:@"DTXcodeBuild"];
 	[infoPlist removeObjectForKey:@"DTPlatformName"];
 	
-	infoPlist[@"LSEnvironment"] = @{
-									@"CFMZEnabled" : @"1"
-#if INJECT_MARZIPAN_GLUE
-									, @"DYLD_INSERT_LIBRARIES" : @"@executable_path/../Frameworks/MarzipanGlue.dylib"
-#endif
-									};
+	if (INJECT_MARZIPAN_GLUE)
+	{
+		infoPlist[@"LSEnvironment"] = @{ @"DYLD_INSERT_LIBRARIES" : @"@executable_path/../Frameworks/MarzipanGlue.dylib" };
+	}
 	
 	[infoPlist writeToFile:infoPlistPath atomically:NO];
 }
@@ -95,7 +106,7 @@ void injectMarzipanGlue(NSString *bundlePath)
 	
 	[[NSFileManager defaultManager] createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:nil];
 	
-	NSString *compilationCommand = [NSString stringWithFormat:@"echo \"%@\" | xcrun clang -x objective-c - -dynamiclib -framework Foundation -o %@/MarzipanGlue.dylib", injectedCode, frameworksPath];
+	NSString *compilationCommand = [NSString stringWithFormat:@"echo \"%@\" | xcrun clang -x objective-c -mmacosx-version-min=10.14 - -dynamiclib -framework Foundation -o %@/MarzipanGlue.dylib", injectedCode, frameworksPath];
 	
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", compilationCommand.UTF8String);
@@ -169,7 +180,7 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 	
 	if (handle == -1)
 	{
-		printf("ERROR: can't load %s", binaryPath.UTF8String);
+		printf("ERROR: can't load %s\n", binaryPath.UTF8String);
 		close(handle);
 		return @[];
 	}
@@ -251,20 +262,27 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 			}
 			else
 			{
-				printf("ERROR: This binary (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuilt with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
-				
-				static dispatch_once_t onceToken;
-				dispatch_once(&onceToken, ^{
-					printf("\nNOTE: iOSMac binaries require the LC_BUILD_VERSION load command to be present. This is added automatically by the linker when the minimum deployment target is iOS 12.0 or macOS 10.14, and cannot be added to existing binaries for older OSes.\n\n");
-				});
-				
-				struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
-				ucmd.cmd = LC_VERSION_MIN_MACOSX;
-				ucmd.sdk = 10<<16|14<<8|0;
-				ucmd.version = 10<<16|14<<8|0;
-				
-				memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
+				if (INJECT_MARZIPAN_GLUE)
+				{
+					printf("WARNING: This binary (%s) was built with an earlier iOS SDK.\n", binaryPath.lastPathComponent.UTF8String);
+				}
+				else
+				{
+					printf("ERROR: This binary (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuilt with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
+					
+					static dispatch_once_t onceToken;
+					dispatch_once(&onceToken, ^{
+						printf("\nNOTE: iOSMac binaries require the LC_BUILD_VERSION load command to be present. This is added automatically by the linker when the minimum deployment target is iOS 12.0 or macOS 10.14, and cannot be added to existing binaries for older OSes. Use the INJECT_MARZIPAN_GLUE=1 environment variable to use code injection to attempt to work around this.\n\n");
+					});
+				}
 			}
+			
+			struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
+			ucmd.cmd = LC_VERSION_MIN_MACOSX;
+			ucmd.sdk = 10<<16|14<<8|0;
+			ucmd.version = 10<<16|14<<8|0;
+			
+			memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
 		}
 		else if(command->cmd == LC_BUILD_VERSION)
 		{
@@ -445,6 +463,13 @@ int main(int argc, const char * argv[]) {
 		NSString *appBinaryPath = binaryPathForBundlePath(appBundlePath);
 		NSString *embeddedFrameworksPath = [appBundlePath stringByAppendingPathComponent:@"Frameworks"];
 		
+		char *injectEnv = getenv("INJECT_MARZIPAN_GLUE");
+		
+		if (injectEnv)
+		{
+			INJECT_MARZIPAN_GLUE = (injectEnv[0] == '1');
+		}
+		
 		BOOL treatAsBinaryFile = NO;
 		
 		loadWhitelist();
@@ -473,10 +498,11 @@ int main(int argc, const char * argv[]) {
 		
 		dumpEntitlementsForBinary(appBundlePath, appBinaryPath);
 		
-#if INJECT_MARZIPAN_GLUE
-		/* Inject some glue code */
-		injectMarzipanGlue(appBundlePath);
-#endif
+		if (INJECT_MARZIPAN_GLUE)
+		{
+			/* Inject some glue code */
+			injectMarzipanGlue(appBundlePath);
+		}
 		
 		/* Do Linker Redirects */
 		
