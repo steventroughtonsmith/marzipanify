@@ -240,17 +240,31 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 		}
 		else if(command->cmd == LC_VERSION_MIN_IPHONEOS)
 		{
-			printf("ERROR: This bundle (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuilt with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
-			
-			exit(-1);
-			/*
-			struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
-			ucmd.cmd = LC_VERSION_MIN_MACOSX;
-			ucmd.sdk = 10<<16|14<<8|0;
-			ucmd.version = 10<<16|14<<8|0;
-			
-			memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
-			 */
+			if ([binaryPath.lastPathComponent hasPrefix:@"libswift"])
+			{
+				printf("ERROR: This bundle contains an incompatible version of the Swift standard libraries (%s).\n", binaryPath.UTF8String);
+				
+				static dispatch_once_t onceToken;
+				dispatch_once(&onceToken, ^{
+					printf("\nNOTE: An iOSMac set of the most-recent Swift standard libraries can be found at /System/Library/PrivateFrameworks/Swift. If your app uses a compatible version of Swift, these libraries may be used in place of those included with your build. Alternatively, you can hardcode the existing embedded library paths in /System/iOSSupport/dyld/macOS-whitelist.txt to allow this app to load the non-iOSMac libraries.\n\n");
+				});
+			}
+			else
+			{
+				printf("ERROR: This binary (%s) was built with an earlier iOS SDK. As of macOS 10.14 beta 3, it needs to be rebuilt with a minimum deployment target of iOS 12.\n", binaryPath.lastPathComponent.UTF8String);
+				
+				static dispatch_once_t onceToken;
+				dispatch_once(&onceToken, ^{
+					printf("\nNOTE: iOSMac binaries require the LC_BUILD_VERSION load command to be present. This is added automatically by the linker when the minimum deployment target is iOS 12.0 or macOS 10.14, and cannot be added to existing binaries for older OSes.\n\n");
+				});
+				
+				struct version_min_command ucmd = *(struct version_min_command*)imageHeaderPtr;
+				ucmd.cmd = LC_VERSION_MIN_MACOSX;
+				ucmd.sdk = 10<<16|14<<8|0;
+				ucmd.version = 10<<16|14<<8|0;
+				
+				memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
+			}
 		}
 		else if(command->cmd == LC_BUILD_VERSION)
 		{
