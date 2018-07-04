@@ -17,6 +17,7 @@ void processEmbeddedLibrary(NSString *libraryPath);
 NSArray *__whitelistedMacFrameworks = nil;
 
 NSString *injectedCode = @"#import <Foundation/Foundation.h>\n\
+#import <AppKit/AppKit.h>\n\
 #import <objc/runtime.h>\n\
 int dyld_get_active_platform();\n\
 \n\
@@ -32,6 +33,9 @@ static const interpose_t interposing_functions[] __attribute__ ((used, section(\
 };\n\
 @implementation NSBundle (Marzipan)\n\
 +(NSString *)currentStringsTableName { return nil; }\n\
+@end\n\
+@implementation NSObject (Marzipan)\n\
+-(CGFloat)_bodyLeading { return 0.0; }\n\
 @end";
 
 //@implementation NSObject\n\
@@ -106,7 +110,7 @@ void injectMarzipanGlue(NSString *bundlePath)
 	
 	[[NSFileManager defaultManager] createDirectoryAtPath:frameworksPath withIntermediateDirectories:YES attributes:nil error:nil];
 	
-	NSString *compilationCommand = [NSString stringWithFormat:@"echo \"%@\" | xcrun clang -x objective-c -mmacosx-version-min=10.14 - -dynamiclib -framework Foundation -o %@/MarzipanGlue.dylib", injectedCode, frameworksPath];
+	NSString *compilationCommand = [NSString stringWithFormat:@"echo \"%@\" | xcrun clang -x objective-c -mmacosx-version-min=10.14 - -dynamiclib -framework Foundation -o \"%@/MarzipanGlue.dylib\"", injectedCode, frameworksPath];
 	
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", compilationCommand.UTF8String);
@@ -151,7 +155,7 @@ BOOL repackageAppBundle(NSString *bundlePath)
 		{
 			[[NSFileManager defaultManager] moveItemAtPath:itemPath toPath:[contentsPath stringByAppendingPathComponent:item] error:nil];
 		}
-		else if ([item isEqualToString:@"Plug-Ins"])
+		else if ([item isEqualToString:@"PlugIns"])
 		{
 			[[NSFileManager defaultManager] moveItemAtPath:itemPath toPath:[contentsPath stringByAppendingPathComponent:item] error:nil];
 		}
@@ -329,7 +333,7 @@ NSString *newLinkerPathForLoadedDylib(NSString *loadedDylib)
 
 void dumpEntitlementsForBinary(NSString *appBundlePath, NSString *appBinaryPath)
 {
-	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > \"Entitlements-%@\".plist &> /dev/null", appBundlePath, appBinaryPath.lastPathComponent];
+	NSString *entitlementCommand = [NSString stringWithFormat:@"codesign -d --entitlements :- \"%@\" > \"Entitlements-%@.plist\" &> /dev/null", appBundlePath, appBinaryPath.lastPathComponent];
 	
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", entitlementCommand.UTF8String);
@@ -363,25 +367,29 @@ void processEmbeddedBundle(NSString *bundlePath)
 	NSString *executableName = infoPlist[@"CFBundleExecutable"];
 	
 	NSString *frameworkBinaryPath = [bundlePath stringByAppendingPathComponent:executableName];
-	NSString *embeddedBundlesPath = [bundlePath stringByAppendingPathComponent:@"Frameworks"];
+	NSArray *embeddedBundlesPaths = @[[bundlePath stringByAppendingPathComponent:@"Frameworks"], [bundlePath stringByAppendingPathComponent:@"PlugIns"]];
 	
-	NSArray *embeddedBundles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedBundlesPath error:nil];
-	
-	if (embeddedBundles)
+	for (NSString *embeddedBundlesPath in embeddedBundlesPaths)
 	{
-		for (NSString *framework in embeddedBundles)
+		NSArray *embeddedBundles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedBundlesPath error:nil];
+		
+		if (embeddedBundles)
 		{
-			if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
+			for (NSString *framework in embeddedBundles)
 			{
-				processEmbeddedBundle([embeddedBundlesPath stringByAppendingPathComponent:framework]);
-			}
-			else if ([framework hasSuffix:@".dylib"])
-			{
-				processEmbeddedLibrary([embeddedBundlesPath stringByAppendingPathComponent:framework]);
-			}
-			else
-			{
+				NSString *targetBundlePath = [embeddedBundlesPath stringByAppendingPathComponent:framework];
+				BOOL isBundle = NO;
 				
+				[[NSFileManager defaultManager] fileExistsAtPath:targetBundlePath isDirectory:&isBundle];
+				
+				if (isBundle)
+				{
+					processEmbeddedBundle([embeddedBundlesPath stringByAppendingPathComponent:framework]);
+				}
+				else
+				{
+					processEmbeddedLibrary([embeddedBundlesPath stringByAppendingPathComponent:framework]);
+				}
 			}
 		}
 	}
@@ -461,7 +469,7 @@ int main(int argc, const char * argv[]) {
 		
 		NSString *appBundlePath = [NSString stringWithUTF8String:argv[1]];
 		NSString *appBinaryPath = binaryPathForBundlePath(appBundlePath);
-		NSString *embeddedFrameworksPath = [appBundlePath stringByAppendingPathComponent:@"Frameworks"];
+		NSArray *embeddedFrameworksPaths = @[[appBundlePath stringByAppendingPathComponent:@"Frameworks"], [appBundlePath stringByAppendingPathComponent:@"PlugIns"]];
 		
 		char *injectEnv = getenv("INJECT_MARZIPAN_GLUE");
 		
@@ -537,17 +545,25 @@ int main(int argc, const char * argv[]) {
 		{
 			/* Process Frameworks */
 			
-			NSArray *embeddedFrameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedFrameworksPath error:nil];
-			
-			for (NSString *framework in embeddedFrameworks)
+			for (NSString *embeddedFrameworksPath in embeddedFrameworksPaths)
 			{
-				if ([framework hasSuffix:@".framework"] || [framework hasSuffix:@".bundle"])
+				NSArray *embeddedFrameworks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:embeddedFrameworksPath error:nil];
+				
+				for (NSString *framework in embeddedFrameworks)
 				{
-					processEmbeddedBundle([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
-				}
-				else
-				{
-					processEmbeddedLibrary([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+					NSString *targetBundlePath = [embeddedFrameworksPath stringByAppendingPathComponent:framework];
+					BOOL isBundle = NO;
+					
+					[[NSFileManager defaultManager] fileExistsAtPath:targetBundlePath isDirectory:&isBundle];
+					
+					if (isBundle)
+					{
+						processEmbeddedBundle([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+					}
+					else
+					{
+						processEmbeddedLibrary([embeddedFrameworksPath stringByAppendingPathComponent:framework]);
+					}
 				}
 			}
 			
