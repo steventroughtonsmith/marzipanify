@@ -120,6 +120,7 @@ void processInfoPlist(NSString *infoPlistPath)
 	infoPlist[@"CFBundleSupportedPlatforms"] = @[@"MacOSX"];
 	infoPlist[@"MinimumOSVersion"] = @"10.14";
 	infoPlist[@"CanInheritApplicationStateFromOtherProcesses"] = @YES;
+	infoPlist[@"UIUserInterfaceStyle"] = @"Automatic";
 
 	[infoPlist removeObjectForKey:@"DTSDKName"];
 	[infoPlist removeObjectForKey:@"DTSDKBuild"];
