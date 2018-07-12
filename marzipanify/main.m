@@ -11,14 +11,19 @@
 @import MachO;
 @import vmnet;
 
+#define DEBUG_PRINT_COMMANDLINE 0
+#define PRINT_LIBSWIFT_LINKER_ERRORS 0
+BOOL INJECT_MARZIPAN_GLUE = NO;
+BOOL DRY_RUN = NO;
+
 void processEmbeddedBundle(NSString *bundlePath);
 void processEmbeddedLibrary(NSString *libraryPath);
 
 NSArray *__whitelistedMacFrameworks = nil;
 
 NSString *injectedCode = @"#import <Foundation/Foundation.h>\n\
-#import <AppKit/AppKit.h>\n\
 #import <objc/runtime.h>\n\
+#import <dlfcn.h>\n\
 int dyld_get_active_platform();\n\
 \n\
 int my_dyld_get_active_platform()\n\
@@ -29,7 +34,7 @@ int my_dyld_get_active_platform()\n\
 typedef struct interpose_s { void *new_func; void *orig_func; } interpose_t;\n\
 \n\
 static const interpose_t interposing_functions[] __attribute__ ((used, section(\\\"__DATA, __interpose\\\"))) = {\n\
-	{ (void *)my_dyld_get_active_platform, (void *)dyld_get_active_platform}\n\
+	{ (void *)my_dyld_get_active_platform, (void *)dyld_get_active_platform }\n\
 };\n\
 @implementation NSBundle (Marzipan)\n\
 +(NSString *)currentStringsTableName { return nil; }\n\
@@ -38,6 +43,22 @@ static const interpose_t interposing_functions[] __attribute__ ((used, section(\
 -(CGFloat)_bodyLeading { return 0.0; }\n\
 @end";
 
+//int my_dlopen(char *path, int flags)\n\
+//{\n\
+//char *newPath = malloc(1024*8);\n\
+//memset(newPath, 0, 1024*8);\n\
+//FILE *file;\n\
+//if (!(file = fopen(path, \\\"r\\\")))\n\
+//{\n\
+//	strcat(newPath,\\\"/Applications/Xcode-beta.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/Library/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot\\\");\n\
+//	strcat(newPath, path);\n\
+//	printf(newPath);\n\
+//	return dlopen(newPath, flags);\n\
+//}\n\
+//return dlopen(path, flags);\n\
+//}\n\
+				   
+				   
 //@implementation NSObject\n\
 //-(void)swizzled_updateControlsForLargeNumberKeysInTracker:(id)a layout:(id)b isVertical:(id)c {}\n\
 //@end\n\
@@ -64,8 +85,23 @@ static const interpose_t interposing_functions[] __attribute__ ((used, section(\
 //	});\n\
 //}";
 
-#define DEBUG_PRINT_COMMANDLINE 0
-BOOL INJECT_MARZIPAN_GLUE = NO;
+void printSectionDivider(NSString *title)
+{
+	NSUInteger len = title.length;
+	NSUInteger spaces = MIN(40,((80-len)/2));
+
+	printf("\n");
+
+	for (int i = 0; i < spaces; i++)
+		printf("-");
+	
+	printf("%s", title.UTF8String);
+	
+	for (int i = 0; i < spaces; i++)
+		printf("-");
+	
+	printf("\n");
+}
 
 NSString *binaryPathForBundlePath(NSString *bundlePath)
 {
@@ -115,11 +151,16 @@ void injectMarzipanGlue(NSString *bundlePath)
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", compilationCommand.UTF8String);
 #endif
-	system(compilationCommand.UTF8String);
+	
+	if (!DRY_RUN)
+		system(compilationCommand.UTF8String);
 }
 
 BOOL repackageAppBundle(NSString *bundlePath)
 {
+	if (DRY_RUN)
+		return NO;
+	
 	NSString *infoPlistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
 	NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
 	NSString *executableName = infoPlist[@"CFBundleExecutable"];
@@ -179,8 +220,8 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 	
 	long sz = [attribs[@"NSFileSystemSize"] longValue];
 	
-	int handle = open(binaryPath.UTF8String, O_RDWR, 0);
-	char *macho = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_SHARED, handle, 0);
+	int handle = open(binaryPath.UTF8String, DRY_RUN ? O_RDONLY : O_RDWR, 0);
+	char *macho = mmap(NULL, sz, DRY_RUN ? PROT_READ : (PROT_READ|PROT_WRITE), MAP_SHARED, handle, 0);
 	
 	if (handle == -1)
 	{
@@ -257,12 +298,14 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 		{
 			if ([binaryPath.lastPathComponent hasPrefix:@"libswift"])
 			{
+#if PRINT_LIBSWIFT_LINKER_ERRORS
 				printf("ERROR: This bundle contains an incompatible version of the Swift standard libraries (%s).\n", binaryPath.UTF8String);
 				
 				static dispatch_once_t onceToken;
 				dispatch_once(&onceToken, ^{
 					printf("\nNOTE: An iOSMac set of the most-recent Swift standard libraries can be found at /System/Library/PrivateFrameworks/Swift. If your app uses a compatible version of Swift, these libraries may be used in place of those included with your build. Alternatively, you can hardcode the existing embedded library paths in /System/iOSSupport/dyld/macOS-whitelist.txt to allow this app to load the non-iOSMac libraries.\n\n");
 				});
+#endif
 			}
 			else
 			{
@@ -286,7 +329,8 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 			ucmd.sdk = 10<<16|14<<8|0;
 			ucmd.version = 10<<16|14<<8|0;
 			
-			memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
+			if (!DRY_RUN)
+				memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
 		}
 		else if(command->cmd == LC_BUILD_VERSION)
 		{
@@ -295,7 +339,8 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 			ucmd.minos = 12<<16|0<<8|0;
 			ucmd.sdk = 10<<16|14<<8|0;
 			
-			memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
+			if (!DRY_RUN)
+				memcpy(imageHeaderPtr, &ucmd, ucmd.cmdsize);
 		}
 		
 		imageHeaderPtr += command->cmdsize;
@@ -338,7 +383,8 @@ void dumpEntitlementsForBinary(NSString *appBundlePath, NSString *appBinaryPath)
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", entitlementCommand.UTF8String);
 #endif
-	system(entitlementCommand.UTF8String);
+	if (!DRY_RUN)
+		system(entitlementCommand.UTF8String);
 }
 
 void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
@@ -357,11 +403,14 @@ void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
 #if DEBUG_PRINT_COMMANDLINE
 	printf("%s\n", resignCommand.UTF8String);
 #endif
-	system(resignCommand.UTF8String);
+	if (!DRY_RUN)
+		system(resignCommand.UTF8String);
 }
 
 void processEmbeddedBundle(NSString *bundlePath)
 {
+	printSectionDivider(bundlePath.lastPathComponent);
+
 	NSString *infoPlistPath = [bundlePath stringByAppendingPathComponent:@"Info.plist"];
 	NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfFile:infoPlistPath];
 	NSString *executableName = infoPlist[@"CFBundleExecutable"];
@@ -412,7 +461,8 @@ void processEmbeddedBundle(NSString *bundlePath)
 #if DEBUG_PRINT_COMMANDLINE
 			printf("%s\n", install_name_tool_command.UTF8String);
 #endif
-			system([install_name_tool_command UTF8String]);
+			if (!DRY_RUN)
+				system([install_name_tool_command UTF8String]);
 		}
 	}
 	
@@ -421,6 +471,11 @@ void processEmbeddedBundle(NSString *bundlePath)
 
 void processEmbeddedLibrary(NSString *libraryPath)
 {
+#if !PRINT_LIBSWIFT_LINKER_ERRORS
+	if (![libraryPath.lastPathComponent hasPrefix:@"libswift"])
+#endif
+		printSectionDivider(libraryPath.lastPathComponent);
+	
 	NSString *frameworkBinaryPath = libraryPath;
 	
 	dumpEntitlementsForBinary(frameworkBinaryPath, frameworkBinaryPath);
@@ -441,21 +496,38 @@ void processEmbeddedLibrary(NSString *libraryPath)
 #if DEBUG_PRINT_COMMANDLINE
 			printf("%s\n", install_name_tool_command.UTF8String);
 #endif
-			system([install_name_tool_command UTF8String]);
+			if (!DRY_RUN)
+				system([install_name_tool_command UTF8String]);
 		}
 	}
 	
 	resignBinary(frameworkBinaryPath, frameworkBinaryPath);
 }
 
-void print_usage()
-{
-	printf("usage: marzipanify MyApp.app\n\n");
-}
-
 void loadWhitelist()
 {
 	__whitelistedMacFrameworks = [[NSString stringWithContentsOfFile:@"/System/iOSSupport/dyld/macOS-whitelist.txt" usedEncoding:nil error:nil] componentsSeparatedByString:@"\n"];
+}
+
+void setupEnvironmentVariables()
+{
+	char *injectEnv = getenv("INJECT_MARZIPAN_GLUE");
+	char *dryRunEnv = getenv("DRY_RUN");
+
+	if (injectEnv)
+	{
+		INJECT_MARZIPAN_GLUE = (injectEnv[0] == '1');
+	}
+	
+	if (dryRunEnv)
+	{
+		DRY_RUN = (dryRunEnv[0] == '1');
+	}
+}
+
+void print_usage()
+{
+	printf("usage: marzipanify MyApp.app\n\n");
 }
 
 int main(int argc, const char * argv[]) {
@@ -471,12 +543,7 @@ int main(int argc, const char * argv[]) {
 		NSString *appBinaryPath = binaryPathForBundlePath(appBundlePath);
 		NSArray *embeddedFrameworksPaths = @[[appBundlePath stringByAppendingPathComponent:@"Frameworks"], [appBundlePath stringByAppendingPathComponent:@"PlugIns"]];
 		
-		char *injectEnv = getenv("INJECT_MARZIPAN_GLUE");
-		
-		if (injectEnv)
-		{
-			INJECT_MARZIPAN_GLUE = (injectEnv[0] == '1');
-		}
+		setupEnvironmentVariables();
 		
 		BOOL treatAsBinaryFile = NO;
 		
@@ -501,6 +568,8 @@ int main(int argc, const char * argv[]) {
 				treatAsBinaryFile = YES;
 			}
 		}
+		
+		printSectionDivider(appBundlePath.lastPathComponent);
 		
 		/* Dump Entitlements */
 		
@@ -528,7 +597,8 @@ int main(int argc, const char * argv[]) {
 #if DEBUG_PRINT_COMMANDLINE
 				printf("%s\n", install_name_tool_command.UTF8String);
 #endif
-				system([install_name_tool_command UTF8String]);
+				if (!DRY_RUN)
+					system([install_name_tool_command UTF8String]);
 			}
 		}
 		
@@ -539,7 +609,8 @@ int main(int argc, const char * argv[]) {
 #if DEBUG_PRINT_COMMANDLINE
 		printf("%s\n", rpathCommand.UTF8String);
 #endif
-		system(rpathCommand.UTF8String);
+		if (!DRY_RUN)
+			system(rpathCommand.UTF8String);
 		
 		if (!treatAsBinaryFile)
 		{
