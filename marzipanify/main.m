@@ -336,7 +336,7 @@ NSArray *modifyMachHeaderAndReturnNSArrayOfLoadedDylibs(NSString *binaryPath)
 		else if(command->cmd == LC_BUILD_VERSION)
 		{
 			struct build_version_command ucmd = *(struct build_version_command*)imageHeaderPtr;
-			ucmd.platform = PLATFORM_IOSMAC;
+			ucmd.platform = PLATFORM_MACCATALYST;
 			ucmd.minos = 12<<16|0<<8|0;
 			ucmd.sdk = 10<<16|14<<8|0;
 			
