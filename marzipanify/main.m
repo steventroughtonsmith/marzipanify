@@ -15,6 +15,7 @@
 #define PRINT_LIBSWIFT_LINKER_ERRORS 0
 BOOL INJECT_MARZIPAN_GLUE = NO;
 BOOL DRY_RUN = NO;
+BOOL ENABLE_SANDBOX = NO;
 
 void processEmbeddedBundle(NSString *bundlePath);
 void processEmbeddedLibrary(NSString *libraryPath);
@@ -398,6 +399,10 @@ void resignBinary(NSString *appBundlePath, NSString *appBinaryPath)
 		entitlementsDict = @{}.mutableCopy;
 	
 	entitlementsDict[@"com.apple.private.iosmac"] = @YES;
+   
+    if (!ENABLE_SANDBOX)
+        entitlementsDict[@"com.apple.security.app-sandbox"] = @NO;
+    
 	[entitlementsDict writeToFile:entitlementsPath atomically:NO];
 	
 	NSString *resignCommand = [NSString stringWithFormat:@"/usr/bin/codesign --force --sign - --entitlements \"%@\" --timestamp=none \"%@\" &> /dev/null", entitlementsPath, appBundlePath];
@@ -514,6 +519,7 @@ void setupEnvironmentVariables()
 {
 	char *injectEnv = getenv("INJECT_MARZIPAN_GLUE");
 	char *dryRunEnv = getenv("DRY_RUN");
+    char *enableSandboxEnv = getenv("ENABLE_SANDBOX");
 
 	if (injectEnv)
 	{
@@ -524,6 +530,10 @@ void setupEnvironmentVariables()
 	{
 		DRY_RUN = (dryRunEnv[0] == '1');
 	}
+    
+    if (enableSandboxEnv) {
+        ENABLE_SANDBOX = (enableSandboxEnv[0] == '1');
+    }
 }
 
 void print_usage()
